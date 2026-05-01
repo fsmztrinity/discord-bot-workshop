@@ -17,6 +17,16 @@ client.on('ready', () => {
 client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
     if (message.content.toLowerCase().startsWith('quiet')) return;
+
+    const wasMentioned = message.mentions.has(client.user);
+    const isReplyToBot = message.reference?.messageId
+        ? await message.channel.messages.fetch(message.reference.messageId)
+            .then((referencedMessage) => referencedMessage.author.id === client.user.id)
+            .catch(() => false)
+        : false;
+
+    if (!wasMentioned && !isReplyToBot) return;
+
     userInput = message.content
     
     await message.channel.sendTyping();
