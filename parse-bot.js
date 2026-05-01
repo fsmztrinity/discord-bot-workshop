@@ -34,6 +34,13 @@ client.on("ready", () => {
 
 const channelMemory = new Map(); // per-channel memory
 
+function cleanMessage(text) {
+  return text
+    .replace(/<@!?\\d+>/g, "")   // user mentions
+    .replace(/<@&\\d+>/g, "")    // role mentions
+    .trim();
+}
+
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
   if (message.content.toLowerCase().startsWith("quiet")) return;
@@ -49,73 +56,33 @@ client.on("messageCreate", async (message) => {
 
   if (!wasMentioned && !isReplyToBot) return;
 
-  const userInput = message.content
-    .replace(/<@!?\\d+>/g, "")
-    .replace(/<@&\\d+>/g, "")
-    .trim();
+  // 🧹 CLEAN INPUT (IMPORTANT FIX)
+  const userInput = cleanMessage(message.content);
 
   await message.channel.sendTyping();
 
-  // 🔒 per-channel memory (safe + lightweight)
-  let memory = channelMemory.get(message.channel.id) || [];
-
-  // keep only last 6 exchanges
-  memory = memory.slice(-6);
-
-  const conversationLog = [
-    {
-      role: "system",
-      content:
-        "You are a helpful Ruby on Rails tutor. Be concise. Use Ruby examples when helpful.",
-    },
-    ...memory,
-    {
-      role: "user",
-      content: userInput,
-    },
-  ];
-
-  let busy = false;
-
-  const safeChat = async (fn) => {
-    while (busy) {
-      await new Promise((r) => setTimeout(r, 300));
-    }
-    busy = true;
-    try {
-      return await fn();
-    } finally {
-      busy = false;
-    }
-  };
-
-  const sendTypingInterval = setInterval(() => {
-    message.channel.sendTyping();
-  }, 8000);
-
   try {
-    const gptResponse = await safeChat(() =>
-      chatWithGpt(conversationLog)
-    );
+    const conversationLog = [
+      {
+        role: "system",
+        content: "You are a helpful assistant. Answer clearly and concisely."
+      },
+      {
+        role: "user",
+        content: userInput
+      }
+    ];
 
-    clearInterval(sendTypingInterval);
+    const gptResponse = await chatWithGpt(conversationLog);
 
     if (!gptResponse) {
-      return message.reply("OpenAI is busy right now. Try again soon.");
+      return message.reply("OpenAI is busy right now. Try again.");
     }
 
-    // 💾 store only what matters (NOT raw Discord logs)
-    memory.push(
-      { role: "user", content: userInput },
-      { role: "assistant", content: gptResponse }
-    );
-
-    channelMemory.set(message.channel.id, memory);
-
     await parseAndReply(gptResponse, message);
-  } catch (err) {
-    clearInterval(sendTypingInterval);
-    console.error("Bot error:", err);
+
+  } catch (error) {
+    console.error("Bot error:", error);
   }
 });
 
