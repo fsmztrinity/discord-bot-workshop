@@ -32,6 +32,8 @@ client.on("ready", () => {
   console.log("The bot is online!");
 });
 
+const channelMemory = new Map(); // per-channel memory
+
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
   if (message.content.toLowerCase().startsWith("quiet")) return;
@@ -47,7 +49,6 @@ client.on("messageCreate", async (message) => {
 
   if (!wasMentioned && !isReplyToBot) return;
 
-  // 🧹 clean input (remove mentions)
   const userInput = message.content
     .replace(/<@!?\\d+>/g, "")
     .replace(/<@&\\d+>/g, "")
@@ -55,48 +56,44 @@ client.on("messageCreate", async (message) => {
 
   await message.channel.sendTyping();
 
+  // 🔒 per-channel memory (safe + lightweight)
+  let memory = channelMemory.get(message.channel.id) || [];
+
+  // keep only last 6 exchanges
+  memory = memory.slice(-6);
+
+  const conversationLog = [
+    {
+      role: "system",
+      content:
+        "You are a helpful Ruby on Rails tutor. Be concise. Use Ruby examples when helpful.",
+    },
+    ...memory,
+    {
+      role: "user",
+      content: userInput,
+    },
+  ];
+
+  let busy = false;
+
+  const safeChat = async (fn) => {
+    while (busy) {
+      await new Promise((r) => setTimeout(r, 300));
+    }
+    busy = true;
+    try {
+      return await fn();
+    } finally {
+      busy = false;
+    }
+  };
+
   const sendTypingInterval = setInterval(() => {
     message.channel.sendTyping();
   }, 8000);
 
   try {
-    // 🧠 MINIMAL CONTEXT (IMPORTANT FIX)
-    let conversationLog = [
-      {
-        role: "system",
-        content:
-          "You are a helpful Ruby on Rails tutor. Be concise. Use Ruby examples when helpful.",
-      },
-    ];
-
-    // 🪶 only last 6 messages (NOT 15 — reduces token usage massively)
-    let prevMessages = await message.channel.messages.fetch({ limit: 6 });
-    prevMessages = prevMessages.reverse();
-
-    for (const msg of prevMessages) {
-      // ignore unrelated bot messages
-      if (msg.author.bot && msg.author.id !== client.user.id) continue;
-
-      const cleaned = msg.content
-        .replace(/<@!?\\d+>/g, "")
-        .replace(/<@&\\d+>/g, "")
-        .trim();
-
-      if (!cleaned) continue;
-
-      conversationLog.push({
-        role: msg.author.id === client.user.id ? "assistant" : "user",
-        content: cleaned,
-      });
-    }
-
-    // add latest user message LAST
-    conversationLog.push({
-      role: "user",
-      content: userInput,
-    });
-
-    // 🧯 rate-limit safe call
     const gptResponse = await safeChat(() =>
       chatWithGpt(conversationLog)
     );
@@ -104,16 +101,21 @@ client.on("messageCreate", async (message) => {
     clearInterval(sendTypingInterval);
 
     if (!gptResponse) {
-      await message.reply(
-        "I'm having trouble reaching OpenAI. Try again in a moment."
-      );
-      return;
+      return message.reply("OpenAI is busy right now. Try again soon.");
     }
 
+    // 💾 store only what matters (NOT raw Discord logs)
+    memory.push(
+      { role: "user", content: userInput },
+      { role: "assistant", content: gptResponse }
+    );
+
+    channelMemory.set(message.channel.id, memory);
+
     await parseAndReply(gptResponse, message);
-  } catch (error) {
+  } catch (err) {
     clearInterval(sendTypingInterval);
-    console.error("Bot error:", error);
+    console.error("Bot error:", err);
   }
 });
 
